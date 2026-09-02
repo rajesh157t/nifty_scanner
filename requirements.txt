@@ -3,3 +3,5 @@ scipy
 pandas
 requests
 flask
+python-telegram-bot==20.7
+nsepython
