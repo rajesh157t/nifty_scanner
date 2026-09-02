@@ -2,8 +2,8 @@ import yfinance as yf, requests, math, pandas as pd
 from scipy.stats import norm
 from datetime import datetime
 import os, random
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU")
+CHAT_ID = os.getenv("1133256294")
 def get_fno_stocks():
     try:
         url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
