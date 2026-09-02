@@ -1,106 +1,121 @@
-import yfinance as yf, requests, math, pandas as pd
-from scipy.stats import norm
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from nsepython import nse_optionchain_scrapper, nse_fno
 from datetime import datetime
-import os, random
-BOT_TOKEN = os.getenv("8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU")
-CHAT_ID = os.getenv("1133256294")
-def get_fno_stocks():
-    try:
-        url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
-        sess = requests.Session()
-        sess.headers.update({"User-Agent": "Mozilla/5.0"})
-        sess.get("https://www.nseindia.com", timeout=5)
-        data = sess.get(url, timeout=10).json()
-        return [item['symbol'] for item in data['data']]
-    except: return ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","LT","ITC","TATAMOTORS"]
-def get_delta(S,K,T,iv):
-    try:
-        d1 = (math.log(S/K) + (0.06 + 0.5*iv**2)*T) / (iv*math.sqrt(T))
-        return norm.cdf(d1)
-    except: return 0.5
-def get_chain(symbol):
-    try:
-        path = "indices" if symbol in ["NIFTY","BANKNIFTY"] else "equities"
-        url = f"https://www.nseindia.com/api/option-chain-{path}?symbol={symbol}"
-        sess = requests.Session()
-        sess.headers.update({"User-Agent": "Mozilla/5.0"})
-        sess.get("https://www.nseindia.com", timeout=5)
-        return sess.get(url, timeout=10).json()
-    except: return None
-def get_atr_ema_vwap(ticker, interval):
-    try:
-        df = yf.download(ticker, period='10d', interval=interval, progress=False, auto_adjust=True)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        if df.empty or len(df) < 20: return None
-        df['H-L'] = df['High'] - df['Low']
-        df['H-C'] = abs(df['High'] - df['Close'].shift(1))
-        df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
-        df['TR'] = df[['H-L','H-C','L-C']].max(axis=1)
-        df['ATR'] = df['TR'].rolling(14).mean()
-        df['EMA9'] = df['Close'].ewm(span=9).mean()
-        df['VWAP'] = (df['Close']*df['Volume']).cumsum() / df['Volume'].cumsum()
-        return df.iloc[-1]
-    except: return None
+import requests
+import time
+
+# ========== CONFIG ==========
+TELEGRAM_BOT_TOKEN = "8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU" 
+TELEGRAM_CHAT_ID = "1133256294"
+FNO_LIST = ["TITAN","ADANIPORTS","RELIANCE","COALINDIA","NTPC","ONGC","BAJFINANCE","LT","SUNPHARMA","POWERGRID"]
+
 def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except: pass
-now=datetime.now()
-all_signals=[]
-try:
-    vix_df = yf.download("^INDIAVIX", period='2d', interval='1d', progress=False, auto_adjust=True)
-    if isinstance(vix_df.columns, pd.MultiIndex): vix_df.columns = vix_df.columns.get_level_values(0)
-    vix_val = float(vix_df['Close'].iloc[-1])
-except: vix_val=15
-if 14 <= vix_val <= 20:
-    FNO_LIST=get_fno_stocks()
-    random.shuffle(FNO_LIST)
-    SCAN_LIST=["NIFTY","BANKNIFTY"]+FNO_LIST[:30]
-    for symbol in SCAN_LIST:
-        yt="^NSEI" if symbol=="NIFTY" else "^NSEBANK" if symbol=="BANKNIFTY" else f"{symbol}.NS"
-        last_15m=get_atr_ema_vwap(yt,"15m")
-        last_1h=get_atr_ema_vwap(yt,"60m")
-        last_5m=get_atr_ema_vwap(yt,"5m")
-        if last_15m is None or last_1h is None or last_5m is None: continue
-        if not (last_5m['Close'] > last_5m['EMA9'] and last_5m['Close'] > last_5m['VWAP']): continue
-        chain=get_chain(symbol)
-        if not chain: continue
-        try:
-            spot=chain['records']['underlyingValue']
-            expiry=chain['records']['expiryDates'][0]
-            T=max((datetime.strptime(expiry,"%d-%b-%Y")-now).days/365,0.01)
-        except: continue
-        atr_15m=float(last_15m['ATR'])
-        atr_1h=float(last_1h['ATR'])
+        requests.post(url, data=data, timeout=10)
+    except:
+        pass
+
+def trix(df, period=14):
+    close = df['Close']
+    e1 = close.ewm(span=period).mean()
+    e2 = e1.ewm(span=period).mean()
+    e3 = e2.ewm(span=period).mean()
+    return (e3 - e3.shift(1)) / e3.shift(1) * 100
+
+def get_live_data(symbol):
+    try:
+        # Daily & Weekly
+        d = yf.download(f"{symbol}.NS", period="6mo", interval="1d", progress=False, auto_adjust=True)
+        w = yf.download(f"{symbol}.NS", period="1y", interval="1wk", progress=False, auto_adjust=True)
+        if len(d) < 50: return None
+
+        # Option Chain for OI + Delta (approx from chain)
+        chain = nse_optionchain_scrapper(symbol)
+        spot = chain['records']['underlyingValue']
+        # nearest expiry = Sep expiry
+        expiry = chain['records']['expiryDates'][0]
+
+        # Find ATM CE with Delta ~0.4-0.6
+        ce_data = None
         for item in chain['records']['data']:
-            if 'CE' not in item: continue
-            ce=item['CE']
-            k,ltp=ce['strikePrice'],ce['lastPrice']
-            vol,oi_pct=ce.get('totalTradedVolume',0),ce.get('pChangeinOpenInterest',0)
-            if symbol in ["NIFTY","BANKNIFTY"]:
-                if abs(k-spot) > spot*0.015: continue
-                if vol < 100000: continue
-            else:
-                if abs(k-spot) > spot*0.03: continue
-                if vol < 40000: continue
-            if oi_pct < 15: continue
-            iv=ce.get('impliedVolatility',25)/100 or 0.25
-            delta=get_delta(spot,k,T,iv)
-            if delta < 0.40: continue
-            intrinsic=max(0,spot-k)
-            tv_pct=((ltp-intrinsic)/ltp*100) if ltp>0 else 100
-            if tv_pct >= 45: continue
-            buy=round(ltp + (atr_15m * delta * 0.15),2)
-            tgt=round(buy + (atr_1h * delta * 0.50),2)
-            sl=round(buy - (atr_15m * delta * 0.30),2)
-            score=(oi_pct*2)+(vol/10000)+(delta*100)-tv_pct
-            all_signals.append({"symbol":symbol,"strike":k,"spot":spot,"buy":buy,"tgt":tgt,"sl":sl,"delta":round(delta,2),"tv":round(tv_pct,1),"oi":oi_pct,"vol":vol,"score":score,"vix":round(vix_val,1)})
-            break
-    if all_signals:
-        all_signals=sorted(all_signals,key=lambda x:x['score'],reverse=True)
-        top2=all_signals[:2]
-        for s in top2:
-            tag="INDEX" if s['symbol'] in ["NIFTY","BANKNIFTY"] else "STOCK"
-            text=(f"🔥 *TOP {top2.index(s)+1} | {tag}: {s['symbol']} {s['strike']} CE*\nSpot:{s['spot']} | VIX:{s['vix']} | Score:{int(s['score'])}\nBUY:`{s['buy']}`\nTGT:`{s['tgt']}`\nSL:`{s['sl']}`\nΔ:{s['delta']} TV:{s['tv']}% OI:{s['oi']}% Vol:{s['vol']}")
-            send_telegram(text)
+            if item.get('expiryDate') == expiry and 'CE' in item:
+                if abs(item['strikePrice'] - spot) < 150: # ATM ke aas paas
+                    ce = item['CE']
+                    # NSE gives delta indirectly via greeks if available, else we use 0.5 for ATM
+                    # Filter: Delta > 40
+                    delta = ce.get('delta', 50) # fallback
+                    if ce.get('lastPrice',0) > 0:
+                        ce_data = {
+                            'strike': item['strikePrice'],
+                            'ltp': ce['lastPrice'],
+                            'oi': ce['openInterest'],
+                            'oi_change': ce.get('changeinOpenInterest',0),
+                            'volume': ce.get('totalTradedVolume',0),
+                            'delta': ce.get('delta', 55) # agar greeks API me hai to
+                        }
+                        break
+
+        if not ce_data: return None
+
+        # Filters
+        close = float(d['Close'].iloc[-1])
+        vol_today = float(d['Volume'].iloc[-1])
+        vol_avg = float(d['Volume'].iloc[-6:-1].mean())
+
+        vol_rise = vol_today > vol_avg * 1.3
+        price_rise = d['Close'].iloc[-1] > d['Close'].iloc[-2]
+        long_buildup = price_rise and ce_data['oi_change'] > 0 and ce_data['volume'] > 1000
+
+        swing = d['Low'].iloc[-1] > d['Low'].iloc[-2] > d['Low'].iloc[-3]
+
+        trix_d = trix(d)
+        trix_w = trix(w)
+        trix_d_cross = trix_d.iloc[-2] < 0 and trix_d.iloc[-1] > 0
+        trix_w_cross = trix_w.iloc[-2] < 0 and trix_w.iloc[-1] > 0
+
+        delta_ok = ce_data['delta'] > 40
+
+        if vol_rise and price_rise and long_buildup and swing and trix_d_cross and trix_w_cross and delta_ok:
+            return {
+                "SYMBOL": symbol,
+                "SPOT": spot,
+                "STRIKE": ce_data['strike'],
+                "CE_LTP": ce_data['ltp'],
+                "DELTA": ce_data['delta'],
+                "OI_CHG%": round((ce_data['oi_change']/ce_data['oi']*100) if ce_data['oi'] else 0,2),
+                "VOL_RATIO": round(vol_today/vol_avg,2),
+                "EXPIRY": expiry
+            }
+    except Exception as e:
+        print(f"{symbol} error {e}")
+        return None
+
+def main():
+    final_list = []
+    for sym in FNO_LIST:
+        print(f"Checking {sym}...")
+        res = get_live_data(sym)
+        if res:
+            final_list.append(res)
+        time.sleep(1.5) # NSE block se bachne ke liye
+
+    if final_list:
+        df = pd.DataFrame(final_list)
+        msg = f"🔥 *NSE Swing Buy Alert {datetime.now().date()}*\n\n"
+        for r in final_list:
+            msg += f"*{r['SYMBOL']}* {r['SPOT']} -> {r['STRIKE']}CE @ {r['CE_LTP']}\n"
+            msg += f"Delta:{r['DELTA']} | Vol:{r['VOL_RATIO']}x | OI Chg:{r['OI_CHG%']}%\n"
+            msg += f"TRIX D&W crossed 0 + Long Buildup ✅\n\n"
+        print(df)
+        send_telegram(msg)
+        df.to_csv(f"alert_{datetime.now().date()}.csv", index=False)
+    else:
+        send_telegram("No stock matched today - TRIX/Delta filter fail")
+        print("No match")
+
+if __name__ == "__main__":
+    main()
