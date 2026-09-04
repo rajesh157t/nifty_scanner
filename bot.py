@@ -112,6 +112,7 @@ async def check_fno():
 
 async def main():
     scheduler = AsyncIOScheduler(timezone='Asia/Kolkata')
+     scheduler.add_job(check_fno, 'cron', hour=9, minute=35, day_of_week='mon-fri')
     scheduler.add_job(check_fno, 'cron', hour=15, minute=35, day_of_week='mon-fri')
     scheduler.start()
     await check_fno()
