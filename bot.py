@@ -27,7 +27,7 @@ FNO_MAP = {
 }
 
 bot = Bot(token=TOKEN)
-app = Flask(_main_)
+app = Flask(__name__)
 
 @app.route('/')
 def home():
