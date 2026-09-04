@@ -29,7 +29,7 @@ FNO_MAP = {
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 # ... tera baki code ...
-if __name__ == "__main__":
+ __name__ == "__main__":
     # bot start
     
     @app.route('/')
