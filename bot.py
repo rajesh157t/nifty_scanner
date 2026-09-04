@@ -11,8 +11,6 @@ import pandas as pd
 
 TOKEN = os.environ.get("8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU")
 CHAT_ID = os.environ.get("1133256294")
-if not TOKEN or not CHAT_ID:
-    raise ValueError("TOKEN aur CHAT_ID env me dalo!")
 
 # yfinance ke liye ticker fix
 TICKER_FIX = {"M&M": "M_M"}
