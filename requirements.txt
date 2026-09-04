@@ -5,3 +5,4 @@ requests
 flask
 python-telegram-bot==20.7
 nsepython
+apscheduler==3.10.4
