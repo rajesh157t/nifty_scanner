@@ -31,8 +31,6 @@ FNO_MAP = {
 import os
 Token = os.environ.get ("BOT_Token")
 
-print(F"token{'HAAN'if token 'nahi'}")
-
 from telegram import BOT
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
