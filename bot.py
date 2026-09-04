@@ -73,7 +73,7 @@ def scan_all_stocks(stock_list):
             print(f"{symbol} error '{e}' - skipping")
             continue
 
-        time.sleep(0.5)
+        time.sleep(0.10)
 
     return results
 
