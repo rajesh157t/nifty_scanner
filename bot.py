@@ -33,7 +33,7 @@ app = Flask(__name__)
 
 if __name__ == "__main__":
     # bot start
-    git add .
+    
 git commit -m "fix name main"
 git push
 @app.route('/')
