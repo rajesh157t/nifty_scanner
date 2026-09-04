@@ -1,142 +1,123 @@
-# pip install yfinance pandas requests nsepython
-
 import yfinance as yf
+import asyncio
+import pytz
+import os
+import threading
+from datetime import datetime
+from telegram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from flask import Flask
 import pandas as pd
-import requests
-from nsepython import nse_optionchain_scrapper
 
-# --- TELEGRAM CONFIG ---
-TELEGRAM_TOKEN = "APNA_BOT_TOKEN_DALO"
-CHAT_ID = "APNA_CHAT_ID_DALO"
+TOKEN = os.environ.get("TOKEN", "8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU")
+CHAT_ID = os.environ.get("CHAT_ID", "1133256294")
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+FNO_MAP = {
+"RELIANCE":"Oil","HDFCBANK":"Bank","ICICIBANK":"Bank","SBIN":"Bank","INFY":"IT","TCS":"IT",
+"LT":"Infra","BHARTIARTL":"Telecom","ITC":"FMCG","AXISBANK":"Bank","KOTAKBANK":"Bank","BAJFINANCE":"Finance",
+"ASIANPAINT":"Paint","MARUTI":"Auto","M&M":"Auto","TITAN":"Consumer","SUNPHARMA":"Pharma","ULTRACEMCO":"Cement",
+"NTPC":"Power","ONGC":"Oil","POWERGRID":"Power","HCLTECH":"IT","WIPRO":"IT","ADANIENT":"Metals",
+"ADANIPORTS":"Infra","JSWSTEEL":"Metals","TATASTEEL":"Metals","HINDALCO":"Metals","COALINDIA":"Oil","BPCL":"Oil",
+"BAJAJFINSV":"Finance","SBILIFE":"Insurance","HDFCLIFE":"Insurance","GRASIM":"Cement","CIPLA":"Pharma","DRREDDY":"Pharma",
+"DIVISLAB":"Pharma","EICHERMOT":"Auto","HEROMOTOCO":"Auto","BAJAJ-AUTO":"Auto","BRITANNIA":"FMCG","NESTLEIND":"FMCG",
+"TATACONSUM":"FMCG","HINDUNILVR":"FMCG","APOLLOHOSP":"Healthcare","BEL":"Defence","HAL":"Defence","TRENT":"Retail",
+"INDUSINDBK":"Bank","BANKBARODA":"Bank","PNB":"Bank","FEDERALBNK":"Bank","IDFCFIRSTB":"Bank","SHRIRAMFIN":"Finance",
+"CHOLAFIN":"Finance","MUTHOOTFIN":"Finance","PERSISTENT":"IT","TECHM":"IT","COFORGE":"IT",
+"DLF":"Realty","GODREJPROP":"Realty","INDIGO":"Aviation"
+}
+
+bot = Bot(token=TOKEN)
+app = Flask(_name_)
+
+@app.route('/')
+def home():
+    return "PRO Bot LIVE"
+
+def run_flask():
+    # Render ke liye 0.0.0.0 aur PORT env compulsory
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Flask running on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def get_data(symbol):
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
-
-def calculate_plus_di(df, period=14):
-    df = df.copy()
-    df['H-pH'] = df['High'] - df['High'].shift(1)
-    df['L-pL'] = df['Low'].shift(1) - df['Low']
-    df['+DM'] = 0.0
-    df.loc[(df['H-pH'] > df['L-pL']) & (df['H-pH'] > 0), '+DM'] = df['H-pH']
-    df['TR'] = pd.concat([df['High']-df['Low'], (df['High']-df['Close'].shift(1)).abs(), (df['Low']-df['Close'].shift(1)).abs()], axis=1).max(axis=1)
-    df['TR14'] = df['TR'].ewm(alpha=1/period, adjust=False).mean()
-    df['+DM14'] = df['+DM'].ewm(alpha=1/period, adjust=False).mean()
-    df['+DI'] = 100 * (df['+DM14'] / df['TR14'])
-    return df
-
-def scan_full(symbol):
-    yf_symbol = f"{symbol}.NS"
-    try:
-        # Daily Data
-        daily = yf.download(yf_symbol, period="50d", interval="1d", progress=False, auto_adjust=True)
-        if len(daily) < 25: return None
-        daily = calculate_plus_di(daily)
-
-        # 15m Data
-        intraday = yf.download(yf_symbol, period="5d", interval="15m", progress=False, auto_adjust=True)
-        if len(intraday) < 10: return None
-
-        # --- CONDITION 1: Price ---
-        latest_15m_close = float(intraday['Close'].iloc[-1])
-        prev_day_high = float(daily['High'].iloc[-2])
-        cond_price = latest_15m_close > prev_day_high
-
-        # --- CONDITION 2: ADX +DI Cross 20 ---
-        curr_di = float(daily['+DI'].iloc[-1])
-        prev_di = float(daily['+DI'].iloc[-2])
-        cond_di = (curr_di > 20 and prev_di <= 20)
-
-        # --- CONDITION 3: VOLUME ---
-        # Aaj ka Volume > 20 Day Average Volume ka 1.2x
-        avg_vol_20 = float(daily['Volume'].iloc[-21:-1].mean())
-        today_vol = float(daily['Volume'].iloc[-1])
-        cond_volume = today_vol > (avg_vol_20 * 1.2)
-
-        # --- CONDITION 4: OI ---
-        # NSE se OI nikalo
-        cond_oi = False
-        oi_data_text = "N/A"
-        try:
-            chain = nse_optionchain_scrapper(symbol)
-            # ATM ke aas paas ka CE OI check
-            spot = chain['records']['underlyingValue']
-            atm_strike = round(spot / 50) * 50
-            
-            # us strike ka CE data dhoondo
-            for item in chain['records']['data']:
-                if item['strikePrice'] == atm_strike and 'CE' in item:
-                    ce_oi = item['CE']['openInterest']
-                    ce_oi_change = item['CE']['changeinOpenInterest']
-                    ce_oi_change_per = item['CE']['pChangeinOpenInterest']
-                    
-                    # OI badh raha hai + Price badh raha hai = Long Buildup (Best)
-                    if ce_oi_change > 0 and ce_oi_change_per > 5:
-                        cond_oi = True
-                        oi_data_text = f"OI {ce_oi} (+{ce_oi_change_per:.1f}%) Long Buildup"
-                    break
-        except:
-            # Agar NSE API fail ho to OI condition ko skip kar do (sirf 3 condition se kaam chalega)
-            cond_oi = True 
-            oi_data_text = "OI API Skip"
-
-        # --- FINAL CHECK ---
-        if cond_price and cond_di and cond_volume and cond_oi:
-            return {
-                "stock": symbol,
-                "close": latest_15m_close,
-                "prev_high": prev_day_high,
-                "di": f"{prev_di:.1f}->{curr_di:.1f}",
-                "vol": f"{today_vol/100000:.1f}L vs Avg {avg_vol_20/100000:.1f}L",
-                "oi": oi_data_text,
-                "strike": round(latest_15m_close / 50) * 50
-            }
-        return None
-    except Exception as e:
-        print(f"{symbol} Error: {e}")
+        df = yf.download(symbol, period="1y", progress=False, auto_adjust=True, threads=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except:
         return None
 
-# --- SCAN ---
-NIFTY_100 = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","ITC","LT","BAJFINANCE","MARUTI","TITAN","SUNPHARMA","ONGC"]
+last_sent_date = None
 
-send_telegram("🚀 <b>Full Scanner ON</b> - Price + ADX + Volume + OI")
-
-for stock in NIFTY_100:
-    res = scan_full(stock)
-    if res:
-        msg = f"""
-🔥 <b>STRONG BREAKOUT - {res['stock']}</b>
-
-✅ 1. 15m Close {res['close']} > Prev High {res['prev_high']}
-✅ 2. ADX +DI Cross 20: {res['di']}
-✅ 3. Volume: {res['vol']} (High Volume)
-✅ 4. OI: {res['oi']} (Long Buildup)
-
-👉 <b>BUY {res['stock']} {res['strike']} CE</b>
-👉 SL: Prev Day High
-
-#NSE #Breakout
-"""
-        send_telegram(msg)
-        print(f"ALERT: {res['stock']}")
-    else:
-        print(f"Skip: {stock}")
-
-def scan_all_stocks(stock_list):
-    results = []
-    for symbol in stock_list:
-        try:
-            # aapka scan ka logic
-            res = scan_full(symbol)
-            if res:
-                results.append(res)
-        except Exception as e:
-            print(f"{symbol} error '{e}' - skipping")
+async def check_fno():
+    global last_sent_date
+    ist = pytz.timezone('Asia/Kolkata')
+    today_str = datetime.now(ist).strftime("%Y-%m-%d")
+    if last_sent_date == today_str:
+        print("Already sent today")
+        return
+    last_sent_date = today_str
+    time_now = datetime.now(ist).strftime("%d %b %I:%M %p")
+    candidates = []
+    for sym, sector in FNO_MAP.items():
+        df = await asyncio.to_thread(get_data, sym + ".NS")
+        if df is None:
             continue
-        
-        time.sleep(1)  # 0.10 mat karo, 1 second rakho, warna ban ho jayega
+        try:
+            vol = float(df['Volume'].iloc[-1])
+            avg20 = float(df['Volume'].rolling(20).mean().iloc[-1])
+            if avg20 == 0:
+                continue
+            ratio = vol / avg20
+            if ratio < 1.5:
+                continue
+            close = float(df['Close'].iloc[-1])
+            prev = float(df['Close'].iloc[-2])
+            chg = (close - prev) / prev * 100
+            rsi = float(calc_rsi(df['Close']).iloc[-1])
+            high_52 = float(df['High'].max())
+            high_pct = (close / high_52) * 100
+            score = ratio * 10 + abs(chg) * 2 + (high_pct / 10)
+            if rsi > 68 and high_pct > 95:
+                tag = "BREAKOUT"
+            elif rsi < 60 and ratio > 1.8:
+                tag = "ACCUMULATION"
+            else:
+                tag = "MOMENTUM"
+            candidates.append((score, ratio, chg, rsi, high_pct, sym, sector, tag))
+        except Exception as e:
+            print(f"Error {sym}: {e}")
+            continue
+    candidates.sort(reverse=True, key=lambda x: x[0])
+    msg = f"PRO ALERT {time_now}\nFII/DII NA |\n\nTOP 3 BEST SHARES:\n\n"
+    if not candidates:
+        msg += "Aaj koi blast nahi"
+    else:
+        for score, ratio, chg, rsi, high_pct, sym, sector, tag in candidates[:3]:
+            msg += f"{sym} | {sector}\n"
+            msg += f"Vol {ratio:.2f}x | {chg:+.2f}% | RSI {rsi:.0f} | High se {high_pct:.0f}%\n"
+            msg += f"=> {tag} (Score {score:.0f})\n\n"
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    return results
+async def main():
+    scheduler = AsyncIOScheduler(timezone='Asia/Kolkata')
+    scheduler.add_job(check_fno, 'cron', hour=15, minute=35, day_of_week='mon-fri')
+    scheduler.start()
+    await check_fno()
+    while True:
+        await asyncio.sleep(3600)
+
+if _name_ == "_main_":
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(main())
