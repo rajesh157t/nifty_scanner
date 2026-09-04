@@ -31,7 +31,7 @@ FNO_MAP = {
 import os
 Token = os.environ.get ("BOT_Token")
 
-from telegram import BOT
+from telegram 
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
