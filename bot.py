@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from flask import Flask
 import pandas as pd
 
-TOKEN = os.environ.get("8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU")
+TOKEN = os.environ.get("8796819926:AAHcbZ6ZMbgVH6ifPAzUwHFFipnw1nulJZo")
 CHAT_ID = os.environ.get("1133256294")
 
 # yfinance ke liye ticker fix
