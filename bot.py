@@ -34,8 +34,6 @@ app = Flask(__name__)
 if __name__ == "__main__":
     # bot start
     
-git commit -m "fix name main"
-git push
 @app.route('/')
 def home():
     return "PRO Bot LIVE"
