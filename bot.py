@@ -28,7 +28,12 @@ FNO_MAP = {
 "CHOLAFIN":"Finance","MUTHOOTFIN":"Finance","PERSISTENT":"IT","TECHM":"IT","COFORGE":"IT",
 "DLF":"Realty","GODREJPROP":"Realty","INDIGO":"Aviation"
 }
+import os
+Token = os.environ.get ("BOT_Token")
 
+print(F"token{'HAAN'if token 'nahi'}")
+
+from telegram import BOT
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
