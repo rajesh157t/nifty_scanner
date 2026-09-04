@@ -1,11 +1,13 @@
+# pip install yfinance pandas requests nsepython
+
 import yfinance as yf
 import pandas as pd
 import requests
 from nsepython import nse_optionchain_scrapper
 
 # --- TELEGRAM CONFIG ---
-TELEGRAM_TOKEN = "8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU"
-CHAT_ID = "1133256294"
+TELEGRAM_TOKEN = "APNA_BOT_TOKEN_DALO"
+CHAT_ID = "APNA_CHAT_ID_DALO"
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -122,3 +124,19 @@ for stock in NIFTY_100:
         print(f"ALERT: {res['stock']}")
     else:
         print(f"Skip: {stock}")
+
+def scan_all_stocks(stock_list):
+    results = []
+    for symbol in stock_list:
+        try:
+            # aapka scan ka logic
+            res = scan_full(symbol)
+            if res:
+                results.append(res)
+        except Exception as e:
+            print(f"{symbol} error '{e}' - skipping")
+            continue
+        
+        time.sleep(1)  # 0.10 mat karo, 1 second rakho, warna ban ho jayega
+
+    return results
