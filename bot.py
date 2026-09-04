@@ -1,98 +1,126 @@
+# pip install yfinance pandas requests nsepython
+
 import yfinance as yf
 import pandas as pd
-import time
-import os
-from flask import Flask
-import threading
+import requests
+from nsepython import nse_optionchain_scrapper
 
-app = Flask(__name__)
+# --- TELEGRAM CONFIG ---
+TELEGRAM_TOKEN = "8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU"
+CHAT_ID = "1133256294"
 
-# ===== TELEGRAM (agar use karte ho to token daal dena) =====
-BOT_TOKEN = os.getenv("8796819926:AAFWziABJAdsOZ-RO5XO3H7_waIpdrdb-xU", "")
-CHAT_ID = os.getenv("1133256294", "")
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def scan_all_stocks(stock_list):
-    # IMPORTANT: Ek sath saare stocks download karo - 'records' error fix
-    tickers_str = " ".join([s + ".NS" for s in stock_list])
-    print(f"Downloading {len(stock_list)} stocks together...")
-
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        # threads=False se Yahoo block nahi karta
-        data = yf.download(tickers_str, period="60d", group_by='ticker', threads=False, auto_adjust=True, progress=False)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
-        print(f"Download failed: {e}, retrying after 10 sec...")
-        time.sleep(10)
-        return []
+        print(f"Telegram Error: {e}")
 
-    results = []
-    for symbol in stock_list:
+def calculate_plus_di(df, period=14):
+    df = df.copy()
+    df['H-pH'] = df['High'] - df['High'].shift(1)
+    df['L-pL'] = df['Low'].shift(1) - df['Low']
+    df['+DM'] = 0.0
+    df.loc[(df['H-pH'] > df['L-pL']) & (df['H-pH'] > 0), '+DM'] = df['H-pH']
+    df['TR'] = pd.concat([df['High']-df['Low'], (df['High']-df['Close'].shift(1)).abs(), (df['Low']-df['Close'].shift(1)).abs()], axis=1).max(axis=1)
+    df['TR14'] = df['TR'].ewm(alpha=1/period, adjust=False).mean()
+    df['+DM14'] = df['+DM'].ewm(alpha=1/period, adjust=False).mean()
+    df['+DI'] = 100 * (df['+DM14'] / df['TR14'])
+    return df
+
+def scan_full(symbol):
+    yf_symbol = f"{symbol}.NS"
+    try:
+        # Daily Data
+        daily = yf.download(yf_symbol, period="50d", interval="1d", progress=False, auto_adjust=True)
+        if len(daily) < 25: return None
+        daily = calculate_plus_di(daily)
+
+        # 15m Data
+        intraday = yf.download(yf_symbol, period="5d", interval="15m", progress=False, auto_adjust=True)
+        if len(intraday) < 10: return None
+
+        # --- CONDITION 1: Price ---
+        latest_15m_close = float(intraday['Close'].iloc[-1])
+        prev_day_high = float(daily['High'].iloc[-2])
+        cond_price = latest_15m_close > prev_day_high
+
+        # --- CONDITION 2: ADX +DI Cross 20 ---
+        curr_di = float(daily['+DI'].iloc[-1])
+        prev_di = float(daily['+DI'].iloc[-2])
+        cond_di = (curr_di > 20 and prev_di <= 20)
+
+        # --- CONDITION 3: VOLUME ---
+        # Aaj ka Volume > 20 Day Average Volume ka 1.2x
+        avg_vol_20 = float(daily['Volume'].iloc[-21:-1].mean())
+        today_vol = float(daily['Volume'].iloc[-1])
+        cond_volume = today_vol > (avg_vol_20 * 1.2)
+
+        # --- CONDITION 4: OI ---
+        # NSE se OI nikalo
+        cond_oi = False
+        oi_data_text = "N/A"
         try:
-            # Data nikalna
-            if len(stock_list) == 1:
-                df = data
-            else:
-                if symbol + ".NS" not in data.columns.levels[0]:
-                    print(f"{symbol} data not found")
-                    continue
-                df = data[symbol + ".NS"]
+            chain = nse_optionchain_scrapper(symbol)
+            # ATM ke aas paas ka CE OI check
+            spot = chain['records']['underlyingValue']
+            atm_strike = round(spot / 50) * 50
+            
+            # us strike ka CE data dhoondo
+            for item in chain['records']['data']:
+                if item['strikePrice'] == atm_strike and 'CE' in item:
+                    ce_oi = item['CE']['openInterest']
+                    ce_oi_change = item['CE']['changeinOpenInterest']
+                    ce_oi_change_per = item['CE']['pChangeinOpenInterest']
+                    
+                    # OI badh raha hai + Price badh raha hai = Long Buildup (Best)
+                    if ce_oi_change > 0 and ce_oi_change_per > 5:
+                        cond_oi = True
+                        oi_data_text = f"OI {ce_oi} (+{ce_oi_change_per:.1f}%) Long Buildup"
+                    break
+        except:
+            # Agar NSE API fail ho to OI condition ko skip kar do (sirf 3 condition se kaam chalega)
+            cond_oi = True 
+            oi_data_text = "OI API Skip"
 
-            if len(df) < 30:
-                continue
+        # --- FINAL CHECK ---
+        if cond_price and cond_di and cond_volume and cond_oi:
+            return {
+                "stock": symbol,
+                "close": latest_15m_close,
+                "prev_high": prev_day_high,
+                "di": f"{prev_di:.1f}->{curr_di:.1f}",
+                "vol": f"{today_vol/100000:.1f}L vs Avg {avg_vol_20/100000:.1f}L",
+                "oi": oi_data_text,
+                "strike": round(latest_15m_close / 50) * 50
+            }
+        return None
+    except Exception as e:
+        print(f"{symbol} Error: {e}")
+        return None
 
-            df['EMA20'] = df['Close'].ewm(span=20).mean()
-            df['EMA50'] = df['Close'].ewm(span=50).mean()
-            df['EMA200'] = df['Close'].ewm(span=200).mean()
-            df['RSI'] = compute_rsi(df['Close'])
-            df['VolAvg20'] = df['Volume'].rolling(20).mean()
+# --- SCAN ---
+NIFTY_100 = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","ITC","LT","BAJFINANCE","MARUTI","TITAN","SUNPHARMA","ONGC"]
 
-            last = df.iloc[-1]
+send_telegram("🚀 <b>Full Scanner ON</b> - Price + ADX + Volume + OI")
 
-            # ===== VOLUME 1.5x CONDITION - TUMHARI DEMAND =====
-            vol_avg = last['VolAvg20']
-            vol_ratio = last['Volume'] / vol_avg if vol_avg > 0 else 0
-            vol_ok = vol_ratio >= 1.5 and last['Close'] > last['Open']
+for stock in NIFTY_100:
+    res = scan_full(stock)
+    if res:
+        msg = f"""
+🔥 <b>STRONG BREAKOUT - {res['stock']}</b>
 
-            trend_ok = last['Close'] > last['EMA200']
-            cross_ok = last['EMA20'] > last['EMA50']
-            rsi_ok = last['RSI'] > 55
+✅ 1. 15m Close {res['close']} > Prev High {res['prev_high']}
+✅ 2. ADX +DI Cross 20: {res['di']}
+✅ 3. Volume: {res['vol']} (High Volume)
+✅ 4. OI: {res['oi']} (Long Buildup)
 
-            if vol_ok and trend_ok and cross_ok and rsi_ok:
-                print(f"✅ BUY {symbol} | Vol {vol_ratio:.2f}x | RSI {last['RSI']:.1f}")
-                results.append(symbol)
-            else:
-                print(f"Checked {symbol} | Vol {vol_ratio:.2f}x - No match")
+👉 <b>BUY {res['stock']} {res['strike']} CE</b>
+👉 SL: Prev Day High
 
-        except Exception as e:
-            print(f"{symbol} error '{e}' - skipping")
-            continue
-
-        time.sleep(0.10)
-
-    return results
-
-def main_loop():
-    stocks = ["NTPC", "ONGC", "BAJFINANCE", "LT", "SUNPHARMA", "POWERGRID", "RELIANCE", "TCS", "INFY"]
-    while True:
-        print("--- Starting new scan ---")
-        matches = scan_all_stocks(stocks)
-        print(f"Scan complete. Found: {matches if matches else 'No match'}")
-        # 15 min baad fir scan karega
-        time.sleep(900)
-
-@app.route('/')
-def home():
-    return "Bot Running OK - Vol 1.5x filter active"
-
-if __name__ == "__main__":
-    # Scanner ko background me chalao
-    threading.Thread(target=main_loop, daemon=True).start()
-    # Flask server - isse 'Application exited early' fix hoga
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+#NSE #Breakout
+"""
+        send_telegram(msg)
+        print(f"ALERT: {res['stock']}")
+    else:
+        print(f"Skip: {stock}")
